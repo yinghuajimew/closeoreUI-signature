@@ -1,29 +1,48 @@
-# OreUI 特征码实测矩阵（6 个样本 × 10 条官方特征码）
+<div align="center">
 
-样本全部为 arm64-v8a 官方原版 `libminecraftpe.so`，用 `scan.py` 纯字节扫描，命中后再回溯函数头判断是否落在函数入口。
+<h1 align="center">OreUI signature matrix</h1>
 
-| 版本 → | 1.20.10.01 | 1.21.0.03 | 1.21.90.3 | 1.21.132.1 | 1.26.0.2 | 1.26.62.1 |
+<p>6 samples × 10 signatures, measured</p>
+
+<p>
+<b>English</b> · <a href="./SIG_MATRIX.zh-CN.md">中文</a>
+</p>
+
+</div>
+
+<br/>
+
+All samples are official, unmodified arm64-v8a `libminecraftpe.so`, scanned byte-wise with
+`scan.py`; each hit was then walked back to check whether it lands on a function entry.
+
+| Version → | 1.20.10.01 | 1.21.0.03 | 1.21.90.3 | 1.21.132.1 | 1.26.0.2 | 1.26.62.1 |
 |---|---|---|---|---|---|---|
-| `1.26.60` | — | — | — | — | — | ✅ **0x9AF937C**（函数头） |
+| `1.26.60` | — | — | — | — | — | ✅ **0x9AF937C** (entry) |
 | `1.26.50` | — | — | — | — | — | — |
 | `1.26.40` | — | — | — | — | — | — |
 | `1.26.30` | — | — | — | — | — | — |
-| `H8 1.26.20` | — | — | — | ✅ 0x907E4BC（函数中） | ✅ 0x913DF54（函数中） | — |
-| `H4 1.21.130~1.26.0` | — | — | — | — | ✅ 0x8F7452C（函数中） | — |
-| `H5 1.26.0~1.26.10` | — | — | — | ✅ 0x8C496D8（函数中） | — | — |
-| `H2 1.21.90~1.21.120` | ✅ **0x56DBB0C**（函数头） | ✅ 0x5F85100（函数头） | ✅ 0x5EC9928（函数头） | — | — | — |
+| `H8 1.26.20` | — | — | — | ✅ 0x907E4BC (mid) | ✅ 0x913DF54 (mid) | — |
+| `H4 1.21.130~1.26.0` | — | — | — | — | ✅ 0x8F7452C (mid) | — |
+| `H5 1.26.0~1.26.10` | — | — | — | ✅ 0x8C496D8 (mid) | — | — |
+| `H2 1.21.90~1.21.120` | ✅ **0x56DBB0C** (entry) | ✅ 0x5F85100 (entry) | ✅ 0x5EC9928 (entry) | — | — | — |
 | `H3 1.21.120` | — | — | — | — | — | — |
-| `H7 1.26.10` | — | — | — | — | ✅ 0x8F7452C（函数中） | — |
+| `H7 1.26.10` | — | — | — | — | ✅ 0x8F7452C (mid) | — |
 
-## 关键发现
+> **This table is historical.** It records what the original 10 signatures did across the six
+> samples. `scan.py` deliberately keeps all 10 so you can reproduce these results. The shipped
+> mod currently carries only 5 — see "Changes to the shipped signature table" below.
 
-### 1. H2 是跨版本最稳的一条
+## Key findings
 
-H2 在 **1.20.10.01、1.21.0.03、1.21.90.3** 三个版本上全部命中，且**命中处都是函数入口**（前一条指令为 `ret`）。这是全部 10 条里唯一满足「跨 1.20→1.21 且落在函数入口」的特征码。
+### 1. H2 is the most stable signature across versions
 
-### 2. 1.20.10.01 已存在 OreUI 运行时，但结构不同
+H2 hits on **1.20.10.01, 1.21.0.03 and 1.21.90.3** — all three, and **all on a function entry**
+(preceded by `ret`). It is the only one of the 10 that spans 1.20→1.21 *and* lands on a function
+entry every time.
 
-H2 在该版本命中 `0x56DBB0C`，其函数体引用的字符串是：
+### 2. 1.20.10.01 already has an OreUI runtime, but a different one
+
+H2 hits `0x56DBB0C` there, and that function body references:
 
 ```
 /gameplay/death      /hbui/gameplay.html      JsException      ScreenLoadFailed
@@ -32,71 +51,88 @@ core:telemetry:firstContentfulPaint      core:telemetry:firstMeaningfulPaint
 core:keyboard:dismissed      Play      Edit World
 ```
 
-而 1.26.62.1 的目标函数引用的是 `/oreui-marketplace/search`、`/send-invites` 这类**具体界面路由**。也就是说：
+Whereas the 1.26.62.1 target references specific screen routes like
+`/oreui-marketplace/search` and `/send-invites`. That means:
 
-- 1.20 时期：只有 HBUI 的**运行时核心**（路由表、异常、遥测、键盘），界面仍以 JSON-UI 为主
-- 1.26 时期：多了大量 **OreUI 界面注册**
+- **1.20 era:** only the HBUI **runtime core** (routing table, exceptions, telemetry, keyboard);
+  screens were still JSON-UI.
+- **1.26 era:** a large number of **OreUI screen registrations** on top of that.
 
-所以「1.20 去 OreUI」在技术上要处理的是另一个函数，不能简单复用 1.26 的钩子目标。
+So "removing OreUI on 1.20" would mean handling a different function; the 1.26 hook target
+cannot simply be reused.
 
-### 3. 命中点是否在函数头，直接决定钩子有效性
+### 3. Whether the hit lands on the entry decides whether the hook works at all
 
-| 是否函数头 | 版本 |
+| On function entry? | Versions |
 |---|---|
-| ✅ 是 | 1.20.10.01、1.21.0.03、1.21.90.3、1.26.62.1 |
-| ❌ 否（落在函数中，前一条为 `bl`） | 1.21.132.1、1.26.0.2 |
+| ✅ yes | 1.20.10.01, 1.21.0.03, 1.21.90.3, 1.26.62.1 |
+| ❌ no (mid-function, previous insn is `bl`) | 1.21.132.1, 1.26.0.2 |
 
-`DobbyHook` / `pl::hook` 在函数中间下钩子，行为不可预期（会覆盖掉被调用的指令或破坏栈帧）。**这 2 个版本上，现有特征码的钩子很可能本身就是坏的**，而不是「能跑但效果不好」。
+`DobbyHook` / `pl::hook` on a mid-function address behaves unpredictably — it overwrites a
+called instruction or corrupts the stack frame. **On those 2 versions the existing hook is
+most likely outright broken**, not merely "works but poorly".
 
-### 4. 同版本多条特征码命中同一地址 = 冗余
+### 4. Several signatures hitting the same address on one version = redundant
 
-1.26.0.2 上 `H8`、`H4`、`H7` 三条全部指向 `0x8F7452C`。保留三条只是浪费扫描时间。
+On 1.26.0.2, `H8`, `H4` and `H7` all point at `0x8F7452C`. Keeping three just wastes scan time.
 
-## 由此得出的特征码表调整
+## Changes to the shipped signature table
 
-**丢弃**（附理由）：
+**Dropped** (with reasons):
 
-- `H3`：6 个样本全部零命中，标注的「1.21.120」实际由 H2 覆盖
-- `H5`：标注「1.26.0~1.26.10」但 1.26.0.2 未命中，反在 1.21.132.1 命中 —— 标注不可信
-- `H7`：1.26.0.2 上与 H4 命中同一地址，完全等价
+- `H3` — zero hits across all 6 samples; the claimed "1.21.120" is actually covered by H2.
+- `H5` — claimed "1.26.0~1.26.10" but missed 1.26.0.2, and hit 1.21.132.1 instead. The label
+  is not trustworthy.
+- `H7` — on 1.26.0.2 it hits the same address as `H4`; fully equivalent.
+- `1.26.50` / `1.26.40` / `1.26.30` — zero hits across all 6 samples, added early per-version
+  with no measured evidence. Removed in a later pass; see below.
 
-**降优先级**：
+**Demoted:**
 
-- `H8`：命中处不在函数入口，仅作最后兜底
+- `H8` — the hit is not on a function entry, so it is kept only as a last resort.
 
-**新增**：
+**Added:**
 
-- `1.21.0.03` 专用特征码（由 `derive_sig.py` 推导，尾部 `F4 03 04 AA E4 03 03 AA … E1 03 00 AA`）
+- A dedicated `1.21.0.03` signature, derived with `derive_sig.py`
+  (tail `F4 03 04 AA E4 03 03 AA … E1 03 00 AA`).
 
-**保留原顺序**：`1.26.60 → 1.26.50 → 1.26.40 → 1.26.30 → H8 → H4 → H2`
+**Shipped order after the later cleanup (5 entries):**
 
-## 尚缺样本
+`1.26.60 → H8 → H4 → H2 → 1.21.0.03`
 
-| 缺口 | 影响 |
+> The three per-version entries (`1.26.50` / `1.26.40` / `1.26.30`) were removed from the mod's
+> table because they never hit any of the six samples. They remain in `scan.py` so this matrix
+> stays reproducible. Note that the versions they *claim* to target were never part of the
+> sample set — their validity for those versions is genuinely unknown, not disproven. If those
+> builds ever show up, re-derive with `derive_sig.py` rather than resurrecting them.
+
+## Missing samples
+
+| Gap | Impact |
 |---|---|
-| 1.20.10 之前（1.19.x） | 无法确认 OreUI 真实起点 |
-| 1.21.120.4 | H3 是否为真冗余，只能间接推断 |
-| 1.26.10.4 | H7 标注无法直接验证 |
-| 1.26.30.5 / 1.26.40.5 / 1.26.50.4 | 这三条从未在实测中命中过任何样本 |
+| Before 1.20.10 (1.19.x) | Cannot confirm where OreUI actually begins |
+| 1.21.120.4 | Whether H3 was truly redundant can only be inferred indirectly |
+| 1.26.10.4 | H7's label cannot be verified directly |
+| 1.26.30.5 / 1.26.40.5 / 1.26.50.4 | These three never hit any sample at all |
 
-## 补充：OreUI 是逐步扩张的，不是开关
+## Note: OreUI grew incrementally, it is not a switch
 
-从 1.20 开始，界面一点点从 JSON-UI 搬到 OreUI。所以「去 OreUI」不是一次性的开关操作，
-而是**针对具体版本、具体界面**处理：
+Since 1.20, screens have been migrating from JSON-UI to OreUI one at a time. So "removing
+OreUI" is not a one-shot toggle — it has to be handled **per version, per screen**:
 
-| 版本 | 状态 |
+| Version | State |
 |---|---|
-| 1.20.10.01 | HBUI/OreUI 运行时核心已存在，界面仍以 JSON-UI 为主 |
-| 1.21.x | OreUI 界面逐个出现 |
-| 1.26.x | 几乎所有界面都是 OreUI |
+| 1.20.10.01 | HBUI/OreUI runtime core present, UI still mostly JSON-UI |
+| 1.21.x | OreUI screens appear one by one |
+| 1.26.x | Almost every screen is OreUI |
 
-1.20.10.01 上特征码命中 `0x56DBB0C`（函数入口），但该函数引用的是
-`/hbui/gameplay.html`、`core:routing:not-found`、`core:gui:resize-hack`、
-`core:telemetry:firstContentfulPaint`、`JsException` 这类运行时核心，
-不是具体界面 —— 与 1.26 的钩子目标不是同一个函数。
+On 1.20.10.01 the signature hits `0x56DBB0C` (a function entry), but that function references
+runtime-core strings such as `/hbui/gameplay.html`, `core:routing:not-found`,
+`core:gui:resize-hack`, `core:telemetry:firstContentfulPaint` and `JsException` — not a
+specific screen. It is not the same function as the 1.26 hook target.
 
-## 补充：路由串每个版本都在增减
+## Note: route strings come and go every version
 
-每个版本的路由串集合都不同，有些界面消失、下个版本又回来。
-所以固定特征码表必然随版本腐化，**必须靠 derive_sig.py 对新版本重新推导**，
-而不是指望手写表覆盖所有版本。
+Every version has a different route-string set; some screens disappear and return in the next
+release. A fixed signature table will always rot, so **re-derive with `derive_sig.py` for each
+new version** instead of expecting a hand-written table to cover everything.

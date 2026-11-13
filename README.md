@@ -186,8 +186,10 @@ See [`tools/SIG_MATRIX.md`](./tools/SIG_MATRIX.md) for the full 6-sample × 10-s
 ```
 tools/derive_sig.py        derive a new signature
 tools/scan.py              check which versions existing signatures hit (accepts APK too)
-tools/README.md            algorithm details (Chinese)
-tools/SIG_MATRIX.md        measured hit matrix across samples (Chinese)
+tools/README.md            algorithm details (English)
+tools/README.zh-CN.md      algorithm details (Chinese)
+tools/SIG_MATRIX.md        measured hit matrix across samples (English)
+tools/SIG_MATRIX.zh-CN.md  measured hit matrix across samples (Chinese)
 .github/workflows/derive-signature.yml   manually triggered lightweight workflow
 ```
 

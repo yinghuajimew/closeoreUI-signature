@@ -180,9 +180,12 @@ AArch64 是小端，**opcode 落在最高字节**，所以约定「低 3 字节�
 ## 目录
 
 ```
-tools/derive_sig.py    推导新特征码
-tools/scan.py          校验特征码命中情况（支持直接传 APK）
-tools/README.md        算法细节
+tools/derive_sig.py       推导新特征码
+tools/scan.py             校验特征码命中情况（支持直接传 APK）
+tools/README.md           算法细节（英文）
+tools/README.zh-CN.md     算法细节（中文）
+tools/SIG_MATRIX.md       实测矩阵（英文）
+tools/SIG_MATRIX.zh-CN.md 实测矩阵（中文）
 .github/workflows/derive-signature.yml   手动触发的轻量工作流
 ```
 

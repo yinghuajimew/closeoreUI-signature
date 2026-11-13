@@ -1,31 +1,40 @@
-# ``libminecraftpe.so`` 特征码推导与校验
+<div align="center">
 
-针对 Minecraft 基岩版 `libminecraftpe.so`，用**纯字节分析**（不需要 IDA、不需要反编译）
-定位 OreUI 配置函数并生成特征码。
+<h1 align="center">Signature derivation and verification</h1>
 
-> 为什么不用 IDA：`libminecraftpe.so` 有 240~340 MB，走 IDA 全量反编译需要几 GB 内存、
-> 数分钟到数小时；而找特征码只需要读 ELF 头、定位字符串、扫 `.text`，几十秒即可完成，
-> GitHub Actions 标准 runner 完全够用。
+<p>For Minecraft Bedrock's <code>libminecraftpe.so</code> — locate the OreUI config function<br>
+and generate a signature using <b>pure byte analysis</b>. No IDA, no decompiler.</p>
 
----
+<p>
+<b>English</b> · <a href="./README.zh-CN.md">中文</a>
+</p>
 
-## 一、特征码长什么样
+</div>
+
+<br/>
+
+> [!NOTE]
+> **Why not IDA?** `libminecraftpe.so` is 240–340 MB. A full IDA decompilation needs several GB
+> of RAM and takes minutes to hours. Finding a signature only needs the ELF header, the anchor
+> strings and a `.text` scan — tens of seconds, well within a standard GitHub Actions runner.
+
+## 1. What a signature looks like
 
 ```
 ? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? B9 ? ? ? D5 F9 03 03 2A
 ```
 
-- `?` 表示通配任意字节，其余为固定字节
-- **AArch64 是小端，opcode 落在最高字节**，所以约定是「低 3 字节抹成 `?`，最高字节保留」——
-  `D1` 是 `sub sp,sp,#imm`、`A9` 是 `stp`、`91` 是 `add imm`、`B9` 是 `str`、`D5` 是 `mrs`
-- 尾部保留 1~2 条 `mov`（`F9 03 03 2A` = `mov w25, w3`），这是**版本落款**：
-  它把某个参数搬进 callee-saved 寄存器，不同版本搬的寄存器不同，正是区分版本的依据
+- `?` is a wildcard byte; everything else is fixed.
+- **AArch64 is little-endian, so the opcode lands in the highest byte.** The convention here is
+  "blank the low 3 bytes, keep the highest byte": `D1` is `sub sp,sp,#imm`, `A9` is `stp`,
+  `91` is `add imm`, `B9` is `str`, `D5` is `mrs`.
+- The trailing 1–2 `mov` instructions are the **version imprint**
+  (`F9 03 03 2A` = `mov w25, w3`). Each build shuffles a different argument into a different
+  callee-saved register, and that is precisely what tells versions apart.
 
----
+## 2. The algorithm (`derive_sig.py`)
 
-## 二、生成算法（`derive_sig.py`）
-
-### 第 1 步：定位函数 —— 靠字符串，不靠特征码
+### Step 1 — Locate the function by strings, not by a signature
 
 ```
 /oreui-marketplace/search   /oreui-marketplace/wishlist
@@ -34,34 +43,36 @@
 /gameplay/bedtime           /pre-start
 ```
 
-这些 OreUI 路由串在 `.rodata` 里位置稳定、跨版本存在（但会增减，见第四节）。
-在 `.text` 里找引用它们的 `ADRP+ADD` 指令对：
+These OreUI route strings sit at stable offsets in `.rodata` and exist across versions (though
+they do come and go — see section 4). Find the `ADRP+ADD` pairs in `.text` that reference them:
 
 ```
-ADRP Xn, page          ; 算出 4KB 对齐的页地址
-ADD  Xn, Xn, #off      ; 补齐低 12 位 → 地址 = (PC & ~0xFFF) + page + off
+ADRP Xn, page          ; page address, 4 KB aligned
+ADD  Xn, Xn, #off      ; add the low 12 bits → address = (PC & ~0xFFF) + page + off
 ```
 
-解出这个地址，等于目标字符串在哪，那里就是「代码里用到这个路由」的位置。
+Resolving that address tells you where the string lives, which in turn tells you where the code
+that uses that route lives.
 
-### 第 2 步：回溯函数头
+### Step 2 — Walk back to the function entry
 
-从引用处往前扫，找最近的、真正像函数起点的位置。判据：
+Scan backwards from the reference for the nearest location that genuinely looks like a function
+start. The criteria:
 
-- 指令是 `sub sp,sp` 或 `stp`
-- **前一条指令是 `ret` / `br` / 无条件 `b`**（函数结束标志）
-- 第一条指令不能是 `ADRP`
+- The instruction is `sub sp,sp` or `stp`
+- **The preceding instruction is `ret` / `br` / unconditional `b`** (a function-end marker)
+- The first instruction is **not** `ADRP`
 
-> 最后一条很重要：`ADRP` 与 `sub sp,sp` 的编码在掩码下会混淆
-> （`912EFC00` 是 `add x0,x0,#0xBBF`，被误判成 `sub sp,sp`），
-> 早期版本漏了这个判据，导致选错函数。
+> The last rule matters. `ADRP` and `sub sp,sp` collide under the mask
+> (`912EFC00` is `add x0,x0,#0xBBF`, misread as `sub sp,sp`). An early version omitted this
+> check and picked the wrong function.
 
-### 第 3 步：取序言并按类别通配
+### Step 3 — Collect the prologue and wildcard it by class
 
-从函数头往下收集 `sub sp,sp` / `stp` / `add imm` / `str` / `mrs` / `mov` 这几类指令，
-遇到不认识的类别即停止。每类的可变位掩码：
+Walking down from the function entry, collect `sub sp,sp` / `stp` / `add imm` / `str` / `mrs` /
+`mov`, and stop at the first unrecognised class. The variable-bit mask per class:
 
-| 类别 | 掩码 | 保留的最高字节 |
+| Class | Mask | Kept highest byte |
 |---|---|---|
 | `sub_sp` | `0x003FFFE0` | `D1` |
 | `stp` | `0x003FFFE0` | `A9` |
@@ -70,54 +81,57 @@ ADD  Xn, Xn, #off      ; 补齐低 12 位 → 地址 = (PC & ~0xFFF) + page + of
 | `mrs` | `0x00FFFFFF` | `D5` |
 | `mov_reg` | `0x00FFFFFF` | `2A` / `AA` |
 
-`mov` 且源寄存器是 `x0`~`x7`（参数）时**整条保留固定**，即版本落款。
+When the `mov` source is `x0`–`x7` (an argument), the **whole instruction is kept fixed** —
+that is the version imprint.
 
-### 第 4 步：候选函数选择
+### Step 4 — Choose among candidate functions
 
-引用同一个路由串的函数可能有几十个（每个界面一个注册函数）。按序言结构评分：
+Dozens of functions can reference the same route string (one registration function per screen).
+Score by prologue shape:
 
 ```
-+10  第一条是 sub sp,sp
-+ 4  ×  stp 的条数            （保存的寄存器越多 = 函数越大）
-+ 3  含 add_imm
-+ 3  含 mrs                   （栈保护金丝雀）
-+ 6  含 mov_reg               （参数搬运 = 落款所在）
++10  first instruction is sub sp,sp
++ 4  ×  number of stp            (more saved registers = larger function)
++ 3  contains add_imm
++ 3  contains mrs                (stack-protector canary)
++ 6  contains mov_reg            (argument shuffle = where the imprint lives)
 ```
 
-**不要按引用密度排序** —— 实测在 1.21.132.1 上，引用最多的反而是相邻的辅助小函数，
-真正的目标函数序言更长。
+**Do not rank by reference count.** Measured on 1.21.132.1, the most-referenced function was a
+small neighbouring helper; the real target simply had a longer prologue.
 
----
+## 3. Cross-validation
 
-## 三、交叉验证结果
-
-用本算法对 1.26.62.1 推导，得到：
+Deriving against 1.26.62.1 yields:
 
 ```
 ? ? ? D1 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? A9 ? ? ? 91 ? ? ? B9 ? ? ? D5 F9 03 03 2A
 ```
 
-与仓库源码里手工维护的 `1.26.60` 那条**逐字节完全一致**。这是算法正确性的直接证据。
+That is **byte-for-byte identical** to the hand-maintained `1.26.60` entry in the mod's source —
+direct evidence the algorithm is correct.
 
-同一条特征码在 1.26.62.1 上命中 `0x9AF937C`，命中处正好是函数入口
-（前一条指令为 `ret`），函数体引用 `/oreui-marketplace/search`、`/send-invites`、
-`/main-menu` 等路由 —— 确认是 OreUI 配置注册函数。
+The same signature hits `0x9AF937C` on 1.26.62.1, and the hit is exactly a function entry
+(preceded by `ret`). The function body references `/oreui-marketplace/search`, `/send-invites`
+and `/main-menu`, confirming it is the OreUI config registration function.
 
----
+`derive_sig.py` now re-scans its own output and reports whether every hit lands on a function
+entry, so this check is no longer something you have to do by hand.
 
-## 四、必须知道的限制
+## 4. Limitations you must know
 
-### 1. OreUI 是逐步扩张的，不是开关
+### 4.1 OreUI grew incrementally — it is not a switch
 
-从 1.20 开始，界面一点点从 JSON-UI 搬到 OreUI：
+Since 1.20, screens have been migrating from JSON-UI to OreUI one at a time:
 
-| 版本 | 状态 |
+| Version | State |
 |---|---|
-| 1.20.10.01 | 已有 HBUI/OreUI **运行时核心**，界面仍以 JSON-UI 为主 |
-| 1.21.x | OreUI 界面逐个出现 |
-| 1.26.x | 几乎所有界面都是 OreUI |
+| 1.20.10.01 | HBUI/OreUI **runtime core** already present, UI still mostly JSON-UI |
+| 1.21.x | OreUI screens appear one by one |
+| 1.26.x | Almost every screen is OreUI |
 
-1.20.10.01 上特征码命中 `0x56DBB0C`（是函数入口），但该函数引用的是：
+On 1.20.10.01 the signature hits `0x56DBB0C` (a real function entry), but that function
+references:
 
 ```
 /hbui/gameplay.html   core:routing:not-found   core:gui:resize-hack
@@ -125,63 +139,62 @@ core:telemetry:firstContentfulPaint   core:exception   JsException
 core:keyboard:dismissed   ScreenLoadFailed
 ```
 
-—— 运行时核心，不是具体界面。也就是说 **1.20 和 1.26 的钩子目标不是同一个函数**，
-不能直接复用。
+— runtime core, not a specific screen. In other words **1.20 and 1.26 do not share a hook
+target**, so a 1.26 signature cannot be reused for 1.20.
 
-### 2. 路由串会增减、反复
+### 4.2 Route strings come and go
 
-每个版本的路由串集合都不同，有些界面在某个版本消失、下个版本又回来。
-所以固定特征码表必然随版本腐化，**必须靠本算法对新版本重新推导**。
+Every version has a different route-string set; some screens vanish for a release and return in
+the next. A fixed signature table will therefore always rot — **re-derive for each new version**
+rather than expecting a hand-written table to keep up.
 
-### 3. 命中点不一定在函数入口
+### 4.3 A hit is not the same as usable
 
-| 版本 | 命中地址 | 前一条指令 | 是否函数入口 |
+| Version | Hit address | Previous insn | Function entry? |
 |---|---|---|---|
-| 1.20.10.01 | 0x56DBB0C | `ret` | ✅ |
-| 1.21.0.03 | 0x5F85100 | `ret` | ✅ |
-| 1.21.90.3 | 0x5EC9928 | `ret` | ✅ |
-| 1.21.132.1 | 0x907E4BC | `bl` | ❌ 真实函数头在 0x907E3D4 |
-| 1.26.0.2 | 0x913DF54 | `bl` | ❌ |
-| 1.26.62.1 | 0x9AF937C | `ret` | ✅ |
+| 1.20.10.01 | `0x56DBB0C` | `ret` | ✅ |
+| 1.21.0.03 | `0x5F85100` | `ret` | ✅ |
+| 1.21.90.3 | `0x5EC9928` | `ret` | ✅ |
+| 1.21.132.1 | `0x907E4BC` | `bl` | ❌ real entry is `0x907E3D4` |
+| 1.26.0.2 | `0x913DF54` | `bl` | ❌ |
+| 1.26.62.1 | `0x9AF937C` | `ret` | ✅ |
 
-在函数中间下钩子会覆盖被调用指令或破坏栈帧。**命中不等于可用**，
-必须额外校验「前一条指令是 `ret`」。
+Hooking the middle of a function overwrites a called instruction or corrupts the stack frame.
+**Always verify that the preceding instruction is `ret`** before trusting a signature.
 
----
+## 5. Usage
 
-## 五、用法
-
-### 推导新版特征码
+### Derive a signature for a new version
 
 ```bash
 python3 tools/derive_sig.py libminecraftpe.so
 python3 tools/derive_sig.py libminecraftpe.so --json out.json
 ```
 
-输出包含：定位到的函数地址、序言指令列表、生成的特征码。
+Output includes the located function address, the prologue instruction list, and the generated
+signature.
 
-### 校验现有特征码能命中哪些版本
+### Check which versions your existing signatures hit
 
 ```bash
-python3 tools/scan.py libminecraftpe.so            # 直接传 .so
-python3 tools/scan.py "Minecraft PE x.xx.apk"      # 也可以直接传 APK,自动取出 .so
+python3 tools/scan.py libminecraftpe.so            # pass the .so directly
+python3 tools/scan.py "Minecraft PE x.xx.apk"      # or an APK; the .so is extracted
 python3 tools/scan.py --json report.json *.so
 ```
 
-### 从 APK 里取 .so
+### Extract the .so from an APK
 
-`scan.py` 会自动处理；单独提取用：
+`scan.py` handles this automatically. To extract only:
 
 ```bash
 python3 tools/scan.py --dump-so libminecraftpe.so game.apk
 ```
 
----
+## 6. Using it from GitHub Actions
 
-## 六、接进 GitHub Actions
+`libminecraftpe.so` is 240–340 MB, so do not bundle this with a full IDA decompilation job.
+Use a separate lightweight job instead: upload the `.so` → run `derive_sig.py` → print the
+signature. The whole thing takes tens of seconds and needs no IDA, no patching and no virtual
+desktop.
 
-`libminecraftpe.so` 有 240~340 MB，不要跟 IDA 全量反编译混在一起跑。建议独立一个轻量
-job：上传 `.so` → 跑 `derive_sig.py` → 输出特征码。整个流程几十秒，不需要安装 IDA、
-不需要 patch、不需要虚拟桌面。
-
-实测矩阵见 `tools/SIG_MATRIX.md`。
+See [`SIG_MATRIX.md`](./SIG_MATRIX.md) for the measured hit matrix.
