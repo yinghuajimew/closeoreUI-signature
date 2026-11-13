@@ -1,0 +1,93 @@
+name: derive-signature
+
+# 从上传的 libminecraftpe.so（或 APK）推导 OreUI 特征码。
+# 纯字节分析，不需要 IDA；单文件几十秒完成。
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '目标文件路径（仓库内）或 Release 资产名，如 libminecraftpe.so'
+        required: true
+        default: 'libminecraftpe.so'
+      from_release:
+        description: 'Release tag 名（留空=用仓库内文件，填 latest=自动取最新 tag）'
+        required: false
+        default: 'latest'
+      derive:
+        description: 'true=推导新特征码；false=只校验现有特征码能命中什么'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  derive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Fetch target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.from_release }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          if [ -n "${TAG:-}" ]; then
+            if [ "$TAG" = "latest" ]; then
+              TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+              echo "[*] 自动取最新 Release: $TAG"
+            fi
+            echo "[*] 从 Release $TAG 下载 $TARGET"
+            gh release download "$TAG" --pattern "$TARGET" --dir work --clobber
+          else
+            echo "[*] 使用仓库内文件 $TARGET"
+            cp "$TARGET" work/
+          fi
+          ls -la work/
+
+      - name: Derive signature
+        if: ${{ inputs.derive }}
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          F="work/$(basename "$TARGET")"
+          python3 tools/derive_sig.py "$F" --json work/signature.json | tee work/derive.txt
+          echo "===== 单行特征码 ====="
+          python3 -c "import json;d=json.load(open('work/signature.json',encoding='utf-8'));print(d['signature']);print(f\"# func_va=0x{d['func_va']:X} refs={d['refs']}\")" | tee work/signature.txt
+
+      - name: Scan existing signatures
+        if: ${{ !inputs.derive }}
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          F="work/$(basename "$TARGET")"
+          python3 tools/scan.py --json work/scan.json "$F" | tee work/scan.txt
+
+      - name: Show report
+        if: always()
+        run: |
+          ls -la work/ || true
+          for f in work/*.txt work/*.json; do
+            [ -f "$f" ] && { echo "===== $f ====="; cat "$f"; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signature-report
+          path: |
+            work/**/*.txt
+            work/**/*.json
+          retention-days: 14

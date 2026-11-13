@@ -1,0 +1,13 @@
+# 二进制不进 git（单文件超 100MB 会被拒绝）
+*.so
+*.apk
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.part_*
+work/
+__pycache__/
+*.pyc
