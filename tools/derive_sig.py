@@ -392,6 +392,9 @@ def main(argv):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    if len(argv) < 2 or argv[1].startswith("-"):
+        print("用法: python3 tools/derive_sig.py <libminecraftpe.so> [--json out.json]")
+        return 2
     path = argv[1]
     elf = Elf(path)
     text = elf.section(".text") or elf.section(".text")
